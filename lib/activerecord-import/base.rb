@@ -19,7 +19,7 @@ module ActiveRecord::Import
   def self.require_adapter(adapter)
     require File.join(AdapterPath,"/abstract_adapter")
     require File.join(AdapterPath,"/#{base_adapter(adapter)}_adapter")
-  rescue => e
+  rescue LoadError => e
   end
 
   # Loads the import functionality for the passed in ActiveRecord connection
