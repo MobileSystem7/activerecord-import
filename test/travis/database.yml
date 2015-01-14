@@ -51,7 +51,7 @@ sqlite:
 
 sqlite3: &sqlite3
   adapter: sqlite3
-  database: test.db
+  database: ":memory:"
 
 spatialite:
   <<: *sqlite3

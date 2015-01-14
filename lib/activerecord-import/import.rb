@@ -11,7 +11,7 @@ module ActiveRecord::Import #:nodoc:
       true
     end
   end
-  
+
   module OnDuplicateKeyUpdateSupport #:nodoc:
     def supports_on_duplicate_key_update? #:nodoc:
       true
@@ -25,6 +25,71 @@ module ActiveRecord::Import #:nodoc:
   end
 end
 
+class ActiveRecord::Associations::CollectionProxy
+  def import(*args, &block)
+    @association.import(*args, &block)
+  end
+end
+
+class ActiveRecord::Associations::CollectionAssociation
+  def import(*args, &block)
+    unless owner.persisted?
+      raise ActiveRecord::RecordNotSaved, "You cannot call import unless the parent is saved"
+    end
+
+    options = args.last.is_a?(Hash) ? args.pop : {}
+
+    model_klass = self.reflection.klass
+    symbolized_foreign_key = self.reflection.foreign_key.to_sym
+    symbolized_column_names = model_klass.column_names.map(&:to_sym)
+
+    owner_primary_key = self.owner.class.primary_key
+    owner_primary_key_value = self.owner.send(owner_primary_key)
+
+    # assume array of model objects
+    if args.last.is_a?( Array ) and args.last.first.is_a? ActiveRecord::Base
+      if args.length == 2
+        models = args.last
+        column_names = args.first
+      else
+        models = args.first
+        column_names = symbolized_column_names
+      end
+
+      if !symbolized_column_names.include?(symbolized_foreign_key)
+        column_names << symbolized_foreign_key
+      end
+
+      models.each do |m|
+        m.send "#{symbolized_foreign_key}=", owner_primary_key_value
+      end
+
+      return model_klass.import column_names, models, options
+
+    # supports empty array
+    elsif args.last.is_a?( Array ) and args.last.empty?
+      return ActiveRecord::Import::Result.new([], 0) if args.last.empty?
+
+    # supports 2-element array and array
+    elsif args.size == 2 and args.first.is_a?( Array ) and args.last.is_a?( Array )
+      column_names, array_of_attributes = args
+      symbolized_column_names = column_names.map(&:to_s)
+
+      if !symbolized_column_names.include?(symbolized_foreign_key)
+        column_names << symbolized_foreign_key
+        array_of_attributes.each { |attrs| attrs << owner_primary_key_value }
+      else
+        index = symbolized_column_names.index(symbolized_foreign_key)
+        array_of_attributes.each { |attrs| attrs[index] = owner_primary_key_value }
+      end
+
+      return model_klass.import column_names, array_of_attributes, options
+    else
+      raise ArgumentError.new( "Invalid arguments!" )
+    end
+  end
+end
+
 class ActiveRecord::Base
   class << self
 
@@ -32,7 +97,7 @@ class ActiveRecord::Base
     tproc = lambda do
       ActiveRecord::Base.default_timezone == :utc ? Time.now.utc : Time.now
     end
-    
+
     AREXT_RAILS_COLUMNS = {
       :create => { "created_on" => tproc ,
                    "created_at" => tproc },
@@ -40,7 +105,7 @@ class ActiveRecord::Base
                    "updated_at" => tproc }
     }
     AREXT_RAILS_COLUMN_NAMES = AREXT_RAILS_COLUMNS[:create].keys + AREXT_RAILS_COLUMNS[:update].keys
-  
+
     # Returns true if the current database connection adapter
     # supports import functionality, otherwise returns false.
     def supports_import?(*args)
@@ -57,14 +122,14 @@ class ActiveRecord::Base
     rescue NoMethodError
       false
     end
-    
-    # Imports a collection of values to the database.  
+
+    # Imports a collection of values to the database.
     #
     # This is more efficient than using ActiveRecord::Base#create or
     # ActiveRecord::Base#save multiple times. This method works well if
     # you want to create more than one record at a time and do not care
     # about having ActiveRecord objects returned for each record
-    # inserted. 
+    # inserted.
     #
     # This can be used with or without validations. It does not utilize
     # the ActiveRecord::Callbacks during creation/modification while
@@ -74,9 +139,9 @@ class ActiveRecord::Base
     #  Model.import array_of_models
     #  Model.import column_names, array_of_values
     #  Model.import column_names, array_of_values, options
-    # 
+    #
     # ==== Model.import array_of_models
-    # 
+    #
     # With this form you can call _import_ passing in an array of model
     # objects that you want updated.
     #
@@ -108,9 +173,9 @@ class ActiveRecord::Base
     # * +timestamps+ - true|false, tells import to not add timestamps \
     #   (if false) even if record timestamps is disabled in ActiveRecord::Base
     #
-    # == Examples  
+    # == Examples
     #  class BlogPost < ActiveRecord::Base ; end
-    #  
+    #
     #  # Example using array of model objects
     #  posts = [ BlogPost.new :author_name=>'Zach Dennis', :title=>'AREXT',
     #            BlogPost.new :author_name=>'Zach Dennis', :title=>'AREXT2',
@@ -120,7 +185,7 @@ class ActiveRecord::Base
     #  # Example using column_names and array_of_values
     #  columns = [ :author_name, :title ]
     #  values = [ [ 'zdennis', 'test post' ], [ 'jdoe', 'another test post' ] ]
-    #  BlogPost.import columns, values 
+    #  BlogPost.import columns, values
     #
     #  # Example using column_names, array_of_value and options
     #  columns = [ :author_name, :title ]
@@ -128,7 +193,7 @@ class ActiveRecord::Base
     #  BlogPost.import( columns, values, :validate => false  )
     #
     #  # Example synchronizing existing instances in memory
-    #  post = BlogPost.find_by_author_name( 'zdennis' )
+    #  post = BlogPost.where(author_name: 'zdennis').first
     #  puts post.author_name # => 'zdennis'
     #  columns = [ :author_name, :title ]
     #  values = [ [ 'yoda', 'test post' ] ]
@@ -142,8 +207,8 @@ class ActiveRecord::Base
     #
     # == On Duplicate Key Update (MySQL only)
     #
-    # The :on_duplicate_key_update option can be either an Array or a Hash. 
-    # 
+    # The :on_duplicate_key_update option can be either an Array or a Hash.
+    #
     # ==== Using an Array
     #
     # The :on_duplicate_key_update option can be an array of column
@@ -158,9 +223,9 @@ class ActiveRecord::Base
     # to model attribute name mappings. This gives you finer grained
     # control over what fields are updated with what attributes on your
     # model. Below is an example:
-    #   
-    #   BlogPost.import columns, attributes, :on_duplicate_key_update=>{ :title => :title } 
-    #  
+    #
+    #   BlogPost.import columns, attributes, :on_duplicate_key_update=>{ :title => :title }
+    #
     # = Returns
     # This returns an object which responds to +failed_instances+ and +num_inserts+.
     # * failed_instances - an array of objects that fails validation and were not committed to the database. An empty array if no validation is performed.
@@ -170,6 +235,7 @@ class ActiveRecord::Base
       options.merge!( args.pop ) if args.last.is_a? Hash
 
       is_validating = options.delete( :validate )
+      is_validating = true unless options[:validate_with_context].nil?
 
       # assume array of model objects
       if args.last.is_a?( Array ) and args.last.first.is_a? ActiveRecord::Base
@@ -180,7 +246,7 @@ class ActiveRecord::Base
           models = args.first
           column_names = self.column_names.dup
         end
-        
+
         array_of_attributes = models.map do |model|
           # this next line breaks sqlite.so with a segmentation fault
           # if model.new_record? || options[:on_duplicate_key_update]
@@ -230,23 +296,23 @@ class ActiveRecord::Base
       return_obj.num_inserts = 0 if return_obj.num_inserts.nil?
       return_obj
     end
-    
-    # TODO import_from_table needs to be implemented. 
+
+    # TODO import_from_table needs to be implemented.
     def import_from_table( options ) # :nodoc:
     end
-    
+
     # Imports the passed in +column_names+ and +array_of_attributes+
     # given the passed in +options+ Hash with validations. Returns an
-    # object with the methods +failed_instances+ and +num_inserts+. 
-    # +failed_instances+ is an array of instances that failed validations. 
+    # object with the methods +failed_instances+ and +num_inserts+.
+    # +failed_instances+ is an array of instances that failed validations.
     # +num_inserts+ is the number of inserts it took to import the data. See
     # ActiveRecord::Base.import for more information on
     # +column_names+, +array_of_attributes+ and +options+.
     def import_with_validations( column_names, array_of_attributes, options={} )
       failed_instances = []
-    
+
       # create instances for each of our column/value sets
-      arr = validations_array_for_column_names_and_attributes( column_names, array_of_attributes )    
+      arr = validations_array_for_column_names_and_attributes( column_names, array_of_attributes )
 
       # keep track of the instance and the position it is currently at. if this fails
       # validation we'll use the index to remove it from the array_of_attributes
@@ -254,10 +320,10 @@ class ActiveRecord::Base
         instance = new do |model|
           hsh.each_pair{ |k,v| model.send("#{k}=", v) }
         end
-        if not instance.valid?
+        if not instance.valid?(options[:validate_with_context])
           array_of_attributes[ i ] = nil
           failed_instances << instance
-        end    
+        end
       end
       array_of_attributes.compact!
 
@@ -268,7 +334,7 @@ class ActiveRecord::Base
                     end
       ActiveRecord::Import::Result.new(failed_instances, num_inserts)
     end
-    
+
     # Imports the passed in +column_names+ and +array_of_attributes+
     # given the passed in +options+ Hash. This will return the number
     # of insert operations it took to create these records without
@@ -309,7 +375,7 @@ class ActiveRecord::Base
         post_sql_statements = connection.post_sql_statements( quoted_table_name, options )
 
         # perform the inserts
-        number_inserted = connection.insert_many( [ insert_sql, post_sql_statements ].flatten, 
+        number_inserted = connection.insert_many( [ insert_sql, post_sql_statements ].flatten,
                                                   values_sql,
                                                   "#{self.class.name} Create Many Without Validations Or Callbacks" )
       end
@@ -331,11 +397,11 @@ class ActiveRecord::Base
           # be sure to query sequence_name *last*, only if cheaper tests fail, because it's costly
           if val.nil? && column.name == primary_key && !sequence_name.blank?
              connection_memo.next_value_for_sequence(sequence_name)
-          else
-            if serialized_attributes.include?(column.name)
-              connection_memo.quote(serialized_attributes[column.name].dump(val), column)
+          elsif column
+            if column.respond_to?(:type_cast_from_user)                         # Rails 4.2 and higher
+              connection_memo.quote(column.type_cast_from_user(val), column)
             else
-              connection_memo.quote(val, column)
+              connection_memo.quote(column.type_cast(val), column)              # Rails 3.1, 3.2, and 4.1
             end
           end
         end
@@ -347,9 +413,9 @@ class ActiveRecord::Base
       AREXT_RAILS_COLUMNS[:create].each_pair do |key, blk|
         if self.column_names.include?(key)
           value = blk.call
-          if index=column_names.index(key)
-             # replace every instance of the array of attributes with our value
-             array_of_attributes.each{ |arr| arr[index] = value }
+          if index=column_names.index(key) || index=column_names.index(key.to_sym)
+            # replace every instance of the array of attributes with our value
+            array_of_attributes.each{ |arr| arr[index] = value if arr[index].nil? }
           else
             column_names << key
             array_of_attributes.each { |arr| arr << value }
@@ -360,17 +426,17 @@ class ActiveRecord::Base
       AREXT_RAILS_COLUMNS[:update].each_pair do |key, blk|
         if self.column_names.include?(key)
           value = blk.call
-          if index=column_names.index(key)
+          if index=column_names.index(key) || index=column_names.index(key.to_sym)
              # replace every instance of the array of attributes with our value
              array_of_attributes.each{ |arr| arr[index] = value }
           else
             column_names << key
             array_of_attributes.each { |arr| arr << value }
           end
-          
+
           if supports_on_duplicate_key_update?
             if options[:on_duplicate_key_update]
-              options[:on_duplicate_key_update] << key.to_sym if options[:on_duplicate_key_update].is_a?(Array)
+              options[:on_duplicate_key_update] << key.to_sym if options[:on_duplicate_key_update].is_a?(Array) && !options[:on_duplicate_key_update].include?(key.to_sym)
               options[:on_duplicate_key_update][key.to_sym] = key.to_sym if options[:on_duplicate_key_update].is_a?(Hash)
             else
               options[:on_duplicate_key_update] = [ key.to_sym ]
@@ -379,13 +445,13 @@ class ActiveRecord::Base
         end
       end
     end
-    
+
     # Returns an Array of Hashes for the passed in +column_names+ and +array_of_attributes+.
     def validations_array_for_column_names_and_attributes( column_names, array_of_attributes ) # :nodoc:
       array_of_attributes.map do |attributes|
         Hash[attributes.each_with_index.map {|attr, c| [column_names[c], attr] }]
       end
     end
-    
+
   end
 end
